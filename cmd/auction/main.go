@@ -12,10 +12,13 @@ import (
 	"fullcycle-auction_go/internal/usecase/auction_usecase"
 	"fullcycle-auction_go/internal/usecase/bid_usecase"
 	"fullcycle-auction_go/internal/usecase/user_usecase"
+	"log"
+	"os"
+	"time"
+
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/mongo"
-	"log"
 )
 
 func main() {
@@ -33,8 +36,34 @@ func main() {
 	}
 
 	router := gin.Default()
+	router.GET("/", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"message": "API do Leilão está no ar",
+		})
+	})
 
-	userController, bidController, auctionsController := initDependencies(databaseConnection)
+	userController, bidController, auctionsController, auctionRepository := initDependencies(databaseConnection)
+
+	// Go routine para fechar leilões expirados automaticamente
+	go func() {
+		intervalStr := os.Getenv("AUCTION_INTERVAL")
+		if intervalStr == "" {
+			intervalStr = "20s"
+		}
+		interval, err := time.ParseDuration(intervalStr)
+		if err != nil {
+			log.Println("Erro ao interpretar AUCTION_INTERVAL, usando 20s")
+			interval = 20 * time.Second
+		}
+
+		for {
+			time.Sleep(interval)
+			err := auctionRepository.CloseExpiredAuctions(context.Background())
+			if err != nil {
+				log.Println("Erro ao fechar leilões expirados:", err)
+			}
+		}
+	}()
 
 	router.GET("/auction", auctionsController.FindAuctions)
 	router.GET("/auction/:auctionId", auctionsController.FindAuctionById)
@@ -50,9 +79,10 @@ func main() {
 func initDependencies(database *mongo.Database) (
 	userController *user_controller.UserController,
 	bidController *bid_controller.BidController,
-	auctionController *auction_controller.AuctionController) {
+	auctionController *auction_controller.AuctionController,
+	auctionRepository *auction.AuctionRepository) {
 
-	auctionRepository := auction.NewAuctionRepository(database)
+	auctionRepository = auction.NewAuctionRepository(database)
 	bidRepository := bid.NewBidRepository(database, auctionRepository)
 	userRepository := user.NewUserRepository(database)
 
@@ -62,5 +92,5 @@ func initDependencies(database *mongo.Database) (
 		auction_usecase.NewAuctionUseCase(auctionRepository, bidRepository))
 	bidController = bid_controller.NewBidController(bid_usecase.NewBidUseCase(bidRepository))
 
-	return
+	return userController, bidController, auctionController, auctionRepository
 }
